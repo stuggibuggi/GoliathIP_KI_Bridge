@@ -114,8 +114,7 @@ model, reproduction steps and sanitized logs when reporting a bug. Add local
 regression tests for protocol/state-machine changes and verify real audio in
 both directions before claiming device compatibility.
 
-No open-source license has been selected yet. A public repository alone does
-not grant a general license to redistribute or modify its contents. The owner
-should select and add a license before inviting broad reuse.
+This project is licensed under the [MIT License](LICENSE).
+Third-party dependencies remain subject to their respective licenses.
 
 This project is not affiliated with Goliath, Dahua, AVM or OpenAI.
