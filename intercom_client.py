@@ -39,6 +39,7 @@ from flask import Flask, jsonify, request
 from PIL import Image, ImageTk
 from werkzeug.serving import make_server
 from door_vision import DoorVision, BOT_VISION_RULES
+from openai_options import VOICES, OptionsError, fetch_catalog, test_realtime, test_vision
 
 RTP_CLOCK = 8000
 SAMPLES_PER_PACKET = 160  # 20ms bei 8kHz
@@ -1768,7 +1769,7 @@ body{font-family:-apple-system,Segoe UI,sans-serif;max-width:900px;margin:20px a
 h1{font-size:20px}
 h2{font-size:15px;border-bottom:1px solid #444;padding-bottom:4px;margin-top:28px}
 .grid{display:grid;grid-template-columns:180px 1fr;gap:6px 10px;align-items:center;margin:10px 0}
-input[type=text],input[type=password],textarea{width:100%;box-sizing:border-box;background:#2a2a2a;
+input[type=text],input[type=password],textarea,select{width:100%;box-sizing:border-box;background:#2a2a2a;
      color:#eee;border:1px solid #555;border-radius:4px;padding:5px}
 textarea{height:80px;font-family:inherit}
 button{background:#3a6ea5;color:#fff;border:none;border-radius:4px;padding:7px 14px;cursor:pointer;margin:4px 4px 4px 0}
@@ -1801,10 +1802,15 @@ label{font-size:13px;color:#aaa}
   <label>Fritzbox Zielnummer</label><input id="fritz_target" type="text">
   <label>Kamera RTSP-URL</label><input id="rtsp" type="password" placeholder="unveraendert lassen = leer; rtsp://USER:PASS@HOST:554/...">
   <label>Bot API-Key</label><input id="bot_key" type="password" placeholder="unveraendert lassen = leer">
-  <label>Bot Modell</label><input id="bot_model" type="text">
+  <label>Realtime-Modell</label><input id="bot_model" type="text" list="realtimeModels"><datalist id="realtimeModels"></datalist>
 </div>
+<button onclick="refreshModels()">Modelle aktualisieren</button>
+<span id="modelStatus">Modelle noch nicht von API geladen</span>
+<p>Kandidaten nach Modellnamen gefiltert, Kompatibilitaet separat testen. Eigene Modell-ID bleibt moeglich.</p>
 
 <h2>Bot: Tuerklingel -- Ansprache</h2>
+<label>Stimme</label><select id="bot_voice"></select>
+<button onclick="testModel('door')">Modell/Stimme testen</button>
 <label>Bot-Annahme nach (0-40 s)</label><input id="bot_answer_delay" type="number" min="0" max="40" step="1">
 <p><label><input id="transfer_enabled" type="checkbox"> Weiterleitung auf Wunsch erlauben</label></p>
 <label>Zielnummer (via Fritzbox)</label><input id="transfer_target" type="text">
@@ -1813,6 +1819,8 @@ label{font-size:13px;color:#aaa}
 <textarea id="bot_prompt"></textarea>
 
 <h2>Bot: Fritzbox (**620) -- Ansprache</h2>
+<label>Stimme</label><select id="bot_voice_fritz"></select>
+<button onclick="testModel('fritz')">Modell/Stimme testen</button>
 <p><label><input id="transfer_enabled_fritz" type="checkbox"> Weiterleitung auf Wunsch erlauben</label></p>
 <label>Zielnummer (via Fritzbox)</label><input id="transfer_target_fritz" type="text">
 <label>Klingelzeit (s)</label><input id="transfer_timeout_fritz" type="number" min="5" max="120">
@@ -1826,7 +1834,10 @@ label{font-size:13px;color:#aaa}
 <p>Aktivierung sendet das aktuelle Klingelbild an OpenAI. Keine Gesichtserkennung oder Identitaetsbestimmung.</p>
 <label><input id="vision_enabled" type="checkbox"> Bildanalyse aktivieren</label>
 <label><input id="vision_save_images" type="checkbox"> Bilder lokal speichern</label>
-<label>Bildanalyse-Modell</label><input id="vision_model" type="text">
+<label>Bildanalyse-Modell</label><input id="vision_model" type="text" list="visionModels"><datalist id="visionModels"></datalist>
+<button onclick="testModel('vision')">Bildmodell testen (API-Kosten)</button>
+<p>Der Bildmodell-Test sendet nur ein synthetisches Testbild, keine Kameraaufnahme.</p>
+<div id="testResult"></div>
 <label>Bild/Protokoll loeschen nach Tagen (1-365)</label><input id="vision_retention" type="number" min="1" max="365">
 <button onclick="saveConfig()">Einstellungen speichern</button>
 <pre id="doorEvents">Noch keine Klingelereignisse geladen.</pre>
@@ -1838,6 +1849,33 @@ label{font-size:13px;color:#aaa}
 <div id="log"></div>
 
 <script>
+function fillOptions(id, values, selected){
+  const field = document.getElementById(id);
+  field.replaceChildren();
+  for (const value of [...new Set([...values, ...(selected ? [selected] : [])])]) {
+    const option = document.createElement('option'); option.value = value; option.textContent = value; field.append(option);
+  }
+  if (selected) field.value = selected;
+}
+async function refreshModels(){
+  const status = document.getElementById('modelStatus'); status.textContent = 'Lade Modelle ...';
+  try {
+    const r = await fetch('/api/openai/models', {method:'POST'}); const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Modellabruf fehlgeschlagen');
+    fillOptions('realtimeModels', data.realtime_models, ''); fillOptions('visionModels', data.vision_models, '');
+    status.textContent = data.note + ' (' + data.all_models.length + ' Modelle)';
+  } catch (error) { status.textContent = error.message + '; bisherige Auswahl bleibt erhalten'; }
+}
+async function testModel(kind){
+  if (kind === 'vision' && !confirm('Synthetisches Testbild an OpenAI senden? API-Kosten koennen anfallen.')) return;
+  const result = document.getElementById('testResult'); result.textContent = 'Pruefe ...';
+  const model = document.getElementById(kind === 'vision' ? 'vision_model' : 'bot_model').value;
+  const voice = document.getElementById(kind === 'fritz' ? 'bot_voice_fritz' : 'bot_voice').value;
+  try {
+    const r = await fetch('/api/openai/test', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({kind,model,voice})});
+    const data = await r.json(); result.textContent = data.text || data.error || 'Test fehlgeschlagen';
+  } catch (error) { result.textContent = 'Test nicht erreichbar'; }
+}
 async function loadConfig(){
   const r = await fetch('/api/config'); const c = await r.json();
   for (const k of ['server','port','domain','user','fritz_server','fritz_user','fritz_target','bot_model'])
@@ -1848,6 +1886,10 @@ async function loadConfig(){
   document.getElementById('bot_answer_delay').value = c.bot_answer_delay ?? '10';
   for (const k of ['vision_enabled','vision_save_images']) document.getElementById(k).checked = !!c[k];
   document.getElementById('vision_model').value = c.vision_model ?? 'gpt-4.1-mini';
+  fillOptions('bot_voice', c.openai_voices || [], c.bot_voice || 'alloy');
+  fillOptions('bot_voice_fritz', c.openai_voices || [], c.bot_voice_fritz || 'alloy');
+  fillOptions('realtimeModels', c.realtime_models || [], '');
+  fillOptions('visionModels', c.vision_models || [], '');
   document.getElementById('vision_retention').value = c.vision_retention ?? '7';
   for (const suffix of ['', '_fritz']) {
     document.getElementById('transfer_enabled'+suffix).checked = !!c['transfer_enabled'+suffix];
@@ -1857,6 +1899,7 @@ async function loadConfig(){
 }
 async function saveConfig(){
   const data = {};
+  for (const k of ['bot_voice','bot_voice_fritz']) data[k] = document.getElementById(k).value;
   for (const k of ['vision_enabled','vision_save_images']) data[k] = document.getElementById(k).checked;
   for (const k of ['vision_model','vision_retention']) data[k] = document.getElementById(k).value;
   for (const suffix of ['', '_fritz']) {
@@ -1928,7 +1971,10 @@ class AdminServer:
 
         @fa.route("/api/config", methods=["GET"])
         def get_config():
-            cfg = dict(a._collect_config())
+            cfg = dict(on_ui(a._collect_config))
+            cfg['openai_voices'] = list(VOICES)
+            cfg['realtime_models'] = a.model_catalog.get('realtime_models', [])
+            cfg['vision_models'] = a.model_catalog.get('vision_models', [])
             for key in ("pass", "fritz_pass", "bot_key", "rtsp"):
                 if cfg.get(key):
                     cfg[key] = ""
@@ -1937,19 +1983,65 @@ class AdminServer:
         @fa.route("/api/config", methods=["POST"])
         def set_config():
             data = request.get_json(force=True, silent=True) or {}
+            if not isinstance(data, dict):
+                return jsonify({'error': 'Konfiguration muss ein Objekt sein'}), 400
             for key in ("pass", "fritz_pass", "bot_key", "rtsp"):
                 if data.get(key) == "":
                     data.pop(key, None)
-            done = threading.Event()
-
             def apply():
                 a._apply_config(data)
                 a._save_config()
-                done.set()
+            try:
+                on_ui(apply)
+                return jsonify({"ok": True})
+            except OptionsError as error:
+                return jsonify({'error': str(error)}), 503
 
-            a.root.after(0, apply)
-            done.wait(timeout=3)
-            return jsonify({"ok": True})
+        def on_ui(callback):
+            # No background thread may read or modify Tk variables directly.
+            if threading.current_thread() is threading.main_thread():
+                return callback()
+            done, result = threading.Event(), {}
+            def execute():
+                try:
+                    result['value'] = callback()
+                except Exception:
+                    result['error'] = True
+                finally:
+                    done.set()
+            a.events.put({'type': 'ui_callback', 'callback': execute})
+            if not done.wait(3) or result.get('error'):
+                raise OptionsError('Anwendungsoberflaeche antwortet nicht')
+            return result['value']
+
+        @fa.route('/api/openai/models', methods=['POST'])
+        def models():
+            try:
+                key = on_ui(lambda: a.var_bot_key.get().strip())
+                catalog = fetch_catalog(key)
+                on_ui(lambda: a._set_model_catalog(catalog))
+                return jsonify(catalog)
+            except OptionsError as error:
+                return jsonify({'error': str(error)}), 400
+            except Exception:
+                return jsonify({'error': 'Modellabruf fehlgeschlagen'}), 502
+
+        @fa.route('/api/openai/test', methods=['POST'])
+        def model_test():
+            data = request.get_json(silent=True) or {}
+            if not isinstance(data, dict) or data.get('kind') not in ('door', 'fritz', 'vision'):
+                return jsonify({'error': 'Ungueltiger Testtyp'}), 400
+            try:
+                key = on_ui(lambda: a.var_bot_key.get().strip())
+                if data['kind'] == 'vision':
+                    text = test_vision(key, data.get('model'))
+                else:
+                    text = test_realtime(key, data.get('model'), data.get('voice'))
+                return jsonify({'ok': True, 'text': text})
+            except OptionsError as error:
+                return jsonify({'error': str(error)}), 400
+            except Exception:
+                return jsonify({'error': 'Modelltest fehlgeschlagen'}), 502
 
         @fa.route("/api/status")
         def status():
@@ -1969,7 +2061,7 @@ class AdminServer:
 
         @fa.route("/api/messages")
         def messages():
-            base = a.var_bot_dir.get().strip()
+            base = on_ui(lambda: a.var_bot_dir.get().strip())
             result = []
             for sub in ("tuer", "fritzbox"):
                 d = os.path.join(base, sub)
@@ -2045,6 +2137,9 @@ class App:
 
         self.devices_in, self.devices_out = self._list_devices()
         self.admin_server = None
+        self.model_catalog = {'all_models': [], 'realtime_models': [], 'vision_models': [], 'voices': list(VOICES)}
+        self.model_refresh_running = False
+        self.voice_dropdowns = []
 
         self._build_ui()
         self._load_config()
@@ -2220,11 +2315,17 @@ class App:
         ttk.Button(trow2, text="Verbindung testen", command=self._on_test_openai_key).pack(side="left")
         self.lbl_bot_status = ttk.Label(trow2, text="Nicht geprueft")
         self.lbl_bot_status.pack(side="left", padx=8)
-        self._labeled_entry(botf, "Modell", self.var_bot_model, 1)
+        ttk.Label(botf, text="Realtime-Modell:").grid(row=1, column=0, sticky="w", padx=4)
+        self.cmb_bot_model = ttk.Combobox(botf, textvariable=self.var_bot_model, width=42,
+                                          values=["gpt-realtime"])
+        self.cmb_bot_model.grid(row=1, column=1, padx=4, pady=2)
+        ttk.Button(botf, text="Modelle aktualisieren", command=self._on_refresh_models).grid(row=1, column=2, padx=4)
         self._labeled_entry(botf, "Nachrichten-Ordner", self.var_bot_dir, 2)
         brow = ttk.Frame(botf)
         brow.grid(row=3, column=0, columnspan=2, sticky="we", pady=4)
         ttk.Button(brow, text="Ordner oeffnen", command=self._on_open_messages_dir).pack(side="left", padx=4)
+        self.lbl_model_status = ttk.Label(brow, text="Modelle noch nicht von API geladen", wraplength=440)
+        self.lbl_model_status.pack(side="left", padx=4)
 
         bot_notebook = ttk.Notebook(tab_bot)
         bot_notebook.pack(fill="both", expand=True, padx=8, pady=6)
@@ -2241,7 +2342,14 @@ class App:
         ttk.Checkbutton(tab_vision, text="Klingelbild mit OpenAI analysieren", variable=self.var_vision_enabled).grid(row=0, column=0, columnspan=2, sticky="w", padx=4, pady=4)
         ttk.Label(tab_vision, text="Aktivierung uebertraegt ein Kamerabild an OpenAI.\nKeine Gesichtserkennung oder Identitaetsbestimmung.", wraplength=500).grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=4)
         ttk.Checkbutton(tab_vision, text="Kamerabilder auch lokal speichern", variable=self.var_vision_save_images).grid(row=2, column=0, columnspan=2, sticky="w", padx=4, pady=4)
-        self._labeled_entry(tab_vision, "Bildanalyse-Modell", self.var_vision_model, 3)
+        ttk.Label(tab_vision, text="Bildanalyse-Modell:").grid(row=3, column=0, sticky="w", padx=4)
+        self.cmb_vision_model = ttk.Combobox(tab_vision, textvariable=self.var_vision_model, width=42,
+                                             values=["gpt-4.1-mini"])
+        self.cmb_vision_model.grid(row=3, column=1, padx=4, pady=2)
+        ttk.Button(tab_vision, text="Modelle aktualisieren", command=self._on_refresh_models).grid(row=7, column=0, padx=4, pady=4)
+        ttk.Button(tab_vision, text="Bildmodell testen (API-Kosten)", command=lambda: self._on_test_model('vision')).grid(row=7, column=1, padx=4, pady=4)
+        self.lbl_vision_test = ttk.Label(tab_vision, text="Test nutzt nur ein synthetisches Bild", wraplength=500)
+        self.lbl_vision_test.grid(row=8, column=0, columnspan=2, sticky="w", padx=4)
         self._labeled_entry(tab_vision, "Bild/Protokoll loeschen nach Tagen (1-365)", self.var_vision_retention, 4)
         ttk.Button(tab_vision, text="Klingelprotokoll oeffnen", command=self._open_door_events).grid(row=5, column=0, sticky="w", padx=4, pady=4)
         self.lbl_vision_status = ttk.Label(tab_vision, text="Noch kein Klingelbild analysiert", wraplength=500)
@@ -2358,9 +2466,11 @@ class App:
         maxdur_var = tk.StringVar(value="180")
 
         ttk.Label(parent, text="Stimme:").grid(row=0, column=0, sticky="w", padx=4, pady=2)
-        ttk.Combobox(parent, textvariable=voice_var, state="readonly", width=42,
-                     values=["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"]
-                     ).grid(row=0, column=1, padx=4, pady=2)
+        voice_dropdown = ttk.Combobox(parent, textvariable=voice_var, state="readonly", width=42, values=VOICES)
+        voice_dropdown.grid(row=0, column=1, padx=4, pady=2)
+        self.voice_dropdowns.append(voice_dropdown)
+        source = 'door' if len(self.voice_dropdowns) == 1 else 'fritz'
+        ttk.Button(parent, text="Modell/Stimme testen", command=lambda: self._on_test_model(source)).grid(row=11, column=0, columnspan=2, pady=4)
 
         ttk.Label(parent, text="Ansprache / Skills (System-Prompt):").grid(
             row=1, column=0, columnspan=2, sticky="w", padx=4, pady=(6, 0))
@@ -2708,31 +2818,53 @@ class App:
         else:
             self._threadsafe_log("[BOT] _on_bot_timeout: self.sip ist None!")
 
-    def _on_test_openai_key(self):
-        self.lbl_bot_status.config(text="Pruefe ...", foreground="black")
-        threading.Thread(target=self._test_openai_key_worker, daemon=True).start()
-
-    def _test_openai_key_worker(self):
-        key = self.var_bot_key.get().strip()
-        if not key:
-            self.events.put({"type": "openai_test_result", "ok": False, "text": "Kein API-Key eingetragen"})
+    def _on_refresh_models(self):
+        if self.model_refresh_running:
             return
+        key = self.var_bot_key.get().strip()
+        self.model_refresh_running = True
+        self.lbl_model_status.config(text="Lade Modelle ...")
+        threading.Thread(target=self._refresh_models_worker, args=(key,), daemon=True).start()
+
+    def _refresh_models_worker(self, key):
         try:
-            req = urllib.request.Request(
-                "https://api.openai.com/v1/models",
-                headers={"Authorization": f"Bearer {key}"})
-            with urllib.request.urlopen(req, timeout=8) as r:
-                if r.status == 200:
-                    self.events.put({"type": "openai_test_result", "ok": True, "text": "Key gueltig, Verbindung OK"})
-                else:
-                    self.events.put({"type": "openai_test_result", "ok": False, "text": f"HTTP {r.status}"})
-        except urllib.error.HTTPError as e:
-            body = e.read().decode(errors="replace")[:200]
-            self.events.put({"type": "openai_test_result", "ok": False, "text": f"HTTP {e.code}: {body}"})
-        except urllib.error.URLError as e:
-            self.events.put({"type": "openai_test_result", "ok": False, "text": f"Netzwerkfehler: {e.reason}"})
-        except Exception as e:
-            self.events.put({"type": "openai_test_result", "ok": False, "text": str(e)})
+            catalog = fetch_catalog(key)
+            self.events.put({'type': 'openai_catalog', 'catalog': catalog})
+        except Exception as error:
+            text = str(error) if isinstance(error, OptionsError) else 'Modellabruf fehlgeschlagen'
+            self.events.put({'type': 'openai_catalog', 'error': text})
+
+    def _set_model_catalog(self, catalog):
+        self.model_catalog = catalog
+        # Keep saved/manual IDs even if not listed or no longer accessible.
+        for combo, variable, category in [(self.cmb_bot_model, self.var_bot_model, 'realtime_models'),
+                                           (self.cmb_vision_model, self.var_vision_model, 'vision_models')]:
+            combo.configure(values=sorted(set(catalog.get(category, []) + [variable.get()])))
+
+    def _on_test_model(self, kind):
+        settings = self._model_test_settings(kind)
+        if kind == 'vision':
+            self.lbl_vision_test.config(text='Pruefe synthetisches Testbild ...')
+        else:
+            self.lbl_bot_status.config(text='Pruefe Modell/Stimme ...')
+        threading.Thread(target=self._model_test_worker, args=(kind, settings), daemon=True).start()
+
+    def _model_test_settings(self, kind):
+        return {'key': self.var_bot_key.get().strip(),
+                'model': self.var_vision_model.get().strip() if kind == 'vision' else self.var_bot_model.get().strip(),
+                'voice': self.var_bot_voice_fritz.get() if kind == 'fritz' else self.var_bot_voice.get()}
+
+    def _model_test_worker(self, kind, settings):
+        try:
+            text = test_vision(settings['key'], settings['model']) if kind == 'vision' else test_realtime(settings['key'], settings['model'], settings['voice'])
+            ok = True
+        except Exception as error:
+            text = str(error) if isinstance(error, OptionsError) else 'Modelltest fehlgeschlagen'
+            ok = False
+        self.events.put({'type': 'openai_model_test', 'kind': kind, 'ok': ok, 'text': text})
+
+    def _on_test_openai_key(self):
+        self._on_refresh_models()
 
     # -- Logging / Ereignisverarbeitung -------------------------------------
     def _log(self, text):
@@ -3032,6 +3164,26 @@ class App:
             return
         if kind in ("call_ended", "call_failed") and self.bot_transfer and self.bot_transfer["source"] == leg:
             self._finish_bot_transfer()
+        if kind == 'ui_callback':
+            ev['callback']()
+            return
+        if kind == 'openai_catalog':
+            self.model_refresh_running = False
+            if ev.get('error'):
+                self.lbl_model_status.config(text=ev['error'] + '; bisherige Auswahl bleibt erhalten')
+                self._log('[OPENAI] ' + ev['error'])
+            else:
+                self._set_model_catalog(ev['catalog'])
+                count = len(ev['catalog']['all_models'])
+                self.lbl_model_status.config(text=f'{count} Modelle geladen; Kandidaten separat testen')
+                self.lbl_bot_status.config(text='API erreichbar, Modelle geladen', foreground='green')
+                self._log(f'[OPENAI] {count} Modelle geladen (keine Kompatibilitaetsgarantie)')
+            return
+        if kind == 'openai_model_test':
+            label = self.lbl_vision_test if ev['kind'] == 'vision' else self.lbl_bot_status
+            label.config(text=ev['text'], foreground='green' if ev['ok'] else 'red')
+            self._log('[OPENAI] ' + ev['text'])
+            return
         if kind == "openai_test_result":
             ok = ev.get("ok")
             self.lbl_bot_status.config(text=ev.get("text", ""), foreground="green" if ok else "red")

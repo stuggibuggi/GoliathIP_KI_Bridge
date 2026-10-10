@@ -93,7 +93,7 @@ from the installation, so an upgrade does not intentionally remove them.
 ## Tests
 
 ```powershell
-.venv\Scripts\python.exe -m unittest test_bot_transfer test_door_vision test_connection_config test_web_server -v
+.venv\Scripts\python.exe -m unittest test_bot_transfer test_door_vision test_connection_config test_web_server test_openai_options -v
 ```
 
 Tests use mocks, synthetic data and local loopback networking. Tkinter tests

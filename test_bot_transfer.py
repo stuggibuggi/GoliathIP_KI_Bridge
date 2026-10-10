@@ -34,6 +34,8 @@ class TransferTests(unittest.TestCase):
 
     def tearDown(self):
         self.app._finish_bot_transfer()
+        for token in self.root.tk.call('after', 'info'):
+            self.root.after_cancel(token)
         for widget in self.root.winfo_children():
             widget.destroy()
 

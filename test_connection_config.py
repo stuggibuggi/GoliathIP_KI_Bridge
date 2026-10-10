@@ -13,6 +13,8 @@ class ConfigurationTests(unittest.TestCase):
             self.app = m.App(self.root)
 
     def tearDown(self):
+        for token in self.root.tk.call('after', 'info'):
+            self.root.after_cancel(token)
         self.root.destroy()
 
     def test_neutral_defaults(self):

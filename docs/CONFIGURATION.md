@@ -56,6 +56,32 @@ to an existing conversation.
 
 ## Bot setup
 
+Click **Modelle aktualisieren** to fetch model IDs using the configured API key.
+The desktop comboboxes and browser suggestion dropdowns separate Realtime and
+image-analysis candidates. This is a name-based filter, not capability metadata
+from the Models API. Manual IDs and saved selections remain usable even when
+not returned. Refresh failures preserve the previous list and settings. Lists
+are cached in memory only, until the app closes; refresh after changing API keys.
+
+Built-in voices come from a maintained documented list, not a voice-list API;
+`marin` and `cedar` are included. Door and telephone voices remain independent.
+Click **Modell/Stimme testen** to open a temporary Realtime session and verify
+the requested voice and G.711 PCMU session configuration. It does not generate
+speech or establish a SIP call, so it is not an end-to-end audio test.
+
+For image analysis, **Bildmodell testen (API-Kosten)** sends only an artificial
+blue image through the Responses API. It never uses a camera snapshot, but can
+incur API usage charges. The selected `vision_model` is also used for actual
+doorbell image analysis. Never use a Realtime model in this field.
+
+The browser retrieves options through the local app; it does not receive the
+stored API key. Save new settings/key before refreshing from the browser.
+Changes apply to new calls/images, not existing bot sessions.
+
+API references: [Models](https://developers.openai.com/api/reference/resources/models/methods/list),
+[Realtime voices and sessions](https://developers.openai.com/api/docs/guides/realtime-conversations),
+[Image inputs](https://developers.openai.com/api/docs/guides/images-vision).
+
 Enter an API key and model, then configure each profile's instructions, voice,
 volume, silence limit and maximum call duration. Enable automatic answering
 only for the intended source. The door answering delay is 0–40 seconds:
