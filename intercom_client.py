@@ -2140,11 +2140,14 @@ class App:
         self.model_catalog = {'all_models': [], 'realtime_models': [], 'vision_models': [], 'voices': list(VOICES)}
         self.model_refresh_running = False
         self.voice_dropdowns = []
+        self.started_at = time.monotonic()
+        self.dashboard_refresh_at = 0
 
         self._build_ui()
         self._load_config()
         self.admin_server = AdminServer(self, port=8765)
         self.admin_server.start()
+        self._refresh_dashboard()
         try:
             self.lbl_admin_url.config(text="Web-Admin: http://localhost:8765 (nur lokal)")
         except OSError:
@@ -2183,6 +2186,8 @@ class App:
 
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+        self.tab_dashboard = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_dashboard, text="Dashboard")
 
         tab_door = ttk.Frame(self.notebook)
         tab_fritz = ttk.Frame(self.notebook)
@@ -2310,22 +2315,22 @@ class App:
             value=os.path.join(os.environ.get("APPDATA", "."), "GoliathIntercom", "Nachrichten"))
 
         self._labeled_entry(botf, "API-Key", self.var_bot_key, 0, show="*")
-        trow2 = ttk.Frame(botf)
-        trow2.grid(row=0, column=2, padx=4, pady=2, sticky="w")
-        ttk.Button(trow2, text="Verbindung testen", command=self._on_test_openai_key).pack(side="left")
-        self.lbl_bot_status = ttk.Label(trow2, text="Nicht geprueft")
-        self.lbl_bot_status.pack(side="left", padx=8)
+        botf.columnconfigure(1, weight=1)
+        self.lbl_bot_status = ttk.Label(botf, text="Nicht geprueft", wraplength=520)
+        self.lbl_bot_status.grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=2)
         ttk.Label(botf, text="Realtime-Modell:").grid(row=1, column=0, sticky="w", padx=4)
         self.cmb_bot_model = ttk.Combobox(botf, textvariable=self.var_bot_model, width=42,
                                           values=["gpt-realtime"])
-        self.cmb_bot_model.grid(row=1, column=1, padx=4, pady=2)
-        ttk.Button(botf, text="Modelle aktualisieren", command=self._on_refresh_models).grid(row=1, column=2, padx=4)
+        self.cmb_bot_model.grid(row=1, column=1, sticky="ew", padx=4, pady=2)
         self._labeled_entry(botf, "Nachrichten-Ordner", self.var_bot_dir, 2)
         brow = ttk.Frame(botf)
         brow.grid(row=3, column=0, columnspan=2, sticky="we", pady=4)
+        ttk.Button(brow, text="Verbindung testen", command=self._on_test_openai_key).pack(side="left", padx=4)
+        self.btn_refresh_models = ttk.Button(brow, text="Modelle aktualisieren", command=self._on_refresh_models)
+        self.btn_refresh_models.pack(side="left", padx=4)
         ttk.Button(brow, text="Ordner oeffnen", command=self._on_open_messages_dir).pack(side="left", padx=4)
-        self.lbl_model_status = ttk.Label(brow, text="Modelle noch nicht von API geladen", wraplength=440)
-        self.lbl_model_status.pack(side="left", padx=4)
+        self.lbl_model_status = ttk.Label(botf, text="Modelle noch nicht von API geladen", wraplength=520)
+        self.lbl_model_status.grid(row=5, column=0, columnspan=2, sticky="w", padx=8, pady=(2, 6))
 
         bot_notebook = ttk.Notebook(tab_bot)
         bot_notebook.pack(fill="both", expand=True, padx=8, pady=6)
@@ -2385,11 +2390,89 @@ class App:
         self.var_transfer_enabled_fritz, self.var_transfer_target_fritz, self.var_transfer_timeout_fritz = self._build_transfer_fields(tab_bot_fritz)
 
         self._build_connection_config()
+        self._build_dashboard()
 
         logf = ttk.LabelFrame(self.root, text="Protokoll")
         logf.pack(fill="x", expand=False, padx=8, pady=(4, 8))
         self.txt_log = tk.Text(logf, height=6, state="disabled")
         self.txt_log.pack(fill="both", expand=True, padx=4, pady=4)
+
+    def _build_dashboard(self):
+        canvas = tk.Canvas(self.tab_dashboard, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.tab_dashboard, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side='right', fill='y')
+        canvas.pack(side='left', fill='both', expand=True)
+        content = ttk.Frame(canvas)
+        window = canvas.create_window((0, 0), window=content, anchor='nw')
+        content.bind('<Configure>', lambda event: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>', lambda event: canvas.itemconfigure(window, width=event.width))
+        ttk.Label(content, text='Systemuebersicht', font=('Segoe UI', 14, 'bold')).pack(anchor='w', padx=12, pady=(12, 6))
+        self.dashboard_labels = {}
+        groups = [('Telefonie', [('door', 'Tuerstation'), ('fritz', 'Fritzbox'), ('calls', 'Gespräche'), ('bridge', 'Audio-Bridge')]),
+                  ('KI und Kamera', [('door_bot', 'Bot: Tuer'), ('fritz_bot', 'Bot: Fritzbox'), ('models', 'Modelle'), ('camera', 'Kamera')]),
+                  ('Anwendung', [('web', 'Web-Verwaltung'), ('uptime', 'Laufzeit'), ('updated', 'Aktualisiert')])]
+        for title, fields in groups:
+            card = ttk.LabelFrame(content, text=title)
+            card.pack(fill='x', padx=12, pady=6)
+            card.columnconfigure(1, weight=1)
+            for row, (key, label) in enumerate(fields):
+                ttk.Label(card, text=label + ':', width=18).grid(row=row, column=0, sticky='nw', padx=8, pady=6)
+                value = ttk.Label(card, text='—', wraplength=380)
+                value.grid(row=row, column=1, sticky='w', padx=8, pady=6)
+                self.dashboard_labels[key] = value
+        actions = ttk.Frame(content)
+        actions.pack(fill='x', padx=12, pady=8)
+        for title, tab in [('Telefonie', 1), ('Bot-Einstellungen', 3), ('Konfiguration', 4)]:
+            ttk.Button(actions, text=title, command=lambda index=tab: self.notebook.select(index)).pack(side='left', padx=(0, 6))
+        ttk.Label(content, text='Anzeige wird jede Sekunde aktualisiert. Aktiviert bedeutet nicht verbunden.\nRegistriert ist der lokale SIP-Status, keine garantierte Erreichbarkeit von außen.',
+                  wraplength=510).pack(anchor='w', padx=12, pady=(4, 12))
+
+    def _dashboard_snapshot(self):
+        now = time.time()
+        values = {}
+        active_calls = 0
+        for key, sip in [('door', self.sip), ('fritz', self.sip_fritz)]:
+            call = dict(getattr(sip, 'call', None) or {})
+            remaining = max(0, int(getattr(sip, 'registered_until', 0) - now))
+            registered = bool(getattr(sip, 'registered', False)) and remaining > 0
+            registration = f'Registriert · Restlaufzeit {remaining}s' if registered else ('Nicht verbunden' if sip is None else 'Nicht registriert / abgelaufen')
+            states = {'ringing_in': 'Eingehender Anruf', 'ringing_out': 'Ziel klingelt', 'connected': 'Im Gespraech', 'cancelling': 'Abbruch laeuft'}
+            state = call.get('state')
+            active_calls += int(bool(call))
+            values[key] = (registration + ' · ' + states.get(state, state or 'Bereit'), 'green' if registered else '#666666')
+            enabled = self.var_bot_enabled.get() if key == 'door' else self.var_bot_fritz_enabled.get()
+            endpoint = getattr(sip, 'audio', None)
+            running = isinstance(endpoint, VoiceBotEndpoint) and endpoint.running
+            bot_state = 'Im Gespraech' if running else ('Aktiviert · wartet auf Anruf' if enabled else 'Deaktiviert')
+            if key == 'door' and self.door_bot_pending:
+                bot_state = 'Annahme wartet auf eingestellte Verzoegerung'
+            values[key + '_bot'] = (bot_state, 'green' if running else '#666666')
+        values['calls'] = (f'{active_calls} aktive SIP-Anrufbeine (Tuer/Fritzbox)', '#222222')
+        if self.bot_transfer:
+            transfer_state = self.bot_transfer.get('state')
+            bridge = {'announcement': 'Weiterleitung: Ansage', 'ringing': 'Weiterleitung: Ziel klingelt',
+                      'connected': 'Weiterleitung: Audio verbunden'}.get(transfer_state, 'Weiterleitung wird aufgebaut')
+            bridge_live = transfer_state == 'connected'
+        elif self.auto_bridge_pending or self.reverse_bridge_pending:
+            bridge, bridge_live = 'Audio-Bridge: Verbindung wird aufgebaut', False
+        else:
+            bridge, bridge_live = ('Audio-Bridge verbunden', True) if self.auto_bridge_active else ('Inaktiv', False)
+        values['bridge'] = (bridge, 'green' if bridge_live else '#666666')
+        values['models'] = (f'Sprache: {self.var_bot_model.get()}\nBildanalyse: {self.var_vision_model.get()}\nStimmen: {self.var_bot_voice.get()} / {self.var_bot_voice_fritz.get()}', '#222222')
+        preview = 'Vorschau laeuft' if self.video.running else 'Vorschau aus'
+        analysis = 'Bildanalyse aktiviert' if self.var_vision_enabled.get() else 'Bildanalyse aus'
+        values['camera'] = (preview + ' · ' + analysis, '#222222')
+        web = self.admin_server and self.admin_server.thread and self.admin_server.thread.is_alive()
+        values['web'] = ('http://localhost:8765 · laeuft' if web else 'Nicht gestartet / nicht verfuegbar', 'green' if web else '#666666')
+        elapsed = int(time.monotonic() - self.started_at)
+        values['uptime'] = (f'{elapsed // 3600:02d}:{elapsed // 60 % 60:02d}:{elapsed % 60:02d}', '#222222')
+        values['updated'] = (time.strftime('%H:%M:%S'), '#666666')
+        return values
+
+    def _refresh_dashboard(self):
+        for key, (text, color) in self._dashboard_snapshot().items():
+            self.dashboard_labels[key].configure(text=text, foreground=color)
 
     def _build_connection_config(self):
         tab = ttk.Frame(self.notebook)
@@ -2458,7 +2541,8 @@ class App:
 
     def _labeled_entry(self, parent, label, var, row, show=None):
         ttk.Label(parent, text=label + ":").grid(row=row, column=0, sticky="w", padx=4, pady=2)
-        ttk.Entry(parent, textvariable=var, width=45, show=show).grid(row=row, column=1, padx=4, pady=2)
+        parent.columnconfigure(1, weight=1)
+        ttk.Entry(parent, textvariable=var, width=45, show=show).grid(row=row, column=1, sticky='ew', padx=4, pady=2)
 
     def _build_bot_config_tab(self, parent, default_prompt):
         voice_var = tk.StringVar(value="alloy")
@@ -2823,6 +2907,7 @@ class App:
             return
         key = self.var_bot_key.get().strip()
         self.model_refresh_running = True
+        self.btn_refresh_models.configure(state='disabled')
         self.lbl_model_status.config(text="Lade Modelle ...")
         threading.Thread(target=self._refresh_models_worker, args=(key,), daemon=True).start()
 
@@ -2904,6 +2989,9 @@ class App:
                 self.lbl_call_state.config(text=f"Verbunden {elapsed // 60:02d}:{elapsed % 60:02d}")
             self._check_bot_transfer()
             self._check_door_bot_answer()
+            if time.monotonic() >= self.dashboard_refresh_at:
+                self.dashboard_refresh_at = time.monotonic() + 1
+                self._refresh_dashboard()
             if time.monotonic() >= self.vision_cleanup_at:
                 self.vision_cleanup_at = time.monotonic() + 3600
                 days = self.var_vision_retention.get()
@@ -3169,6 +3257,7 @@ class App:
             return
         if kind == 'openai_catalog':
             self.model_refresh_running = False
+            self.btn_refresh_models.configure(state='normal')
             if ev.get('error'):
                 self.lbl_model_status.config(text=ev['error'] + '; bisherige Auswahl bleibt erhalten')
                 self._log('[OPENAI] ' + ev['error'])

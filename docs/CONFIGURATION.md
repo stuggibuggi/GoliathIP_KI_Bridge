@@ -44,6 +44,15 @@ This version is configurable, but not completely vendor/installation agnostic.
 
 ## Desktop operations
 
+- **Dashboard**: the default main tab, refreshed once per second. Shows locally
+  tracked SIP registration and remaining lifetime, active call legs, bridge/
+  handoff state, enabled versus running bot profiles, configured models/voices,
+  camera options, web-server state and application uptime. It does not prove
+  incoming reachability, camera image delivery or an active OpenAI connection.
+  Status text accompanies colors; the tab scrolls at smaller window sizes.
+  The bot's general actions share one left-aligned row; results appear below
+  instead of moving individual buttons as status messages change.
+
 - **Tuerstation**: register the virtual indoor station, dial a target, answer or
   reject, select desktop audio devices, play a diagnostic tone, preview video.
 - **Fritzbox-Bridge**: register the second SIP account and configure bridging.
