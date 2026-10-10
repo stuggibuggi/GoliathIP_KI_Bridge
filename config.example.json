@@ -1,0 +1,17 @@
+{
+  "server": "",
+  "port": "5060",
+  "domain": "VDP",
+  "user": "",
+  "pass": "",
+  "rtsp": "",
+  "fritz_server": "",
+  "fritz_user": "",
+  "fritz_pass": "",
+  "fritz_target": "",
+  "bot_key": "",
+  "bot_enabled": false,
+  "bot_fritz_enabled": false,
+  "vision_enabled": false,
+  "vision_save_images": false
+}

@@ -1,0 +1,17 @@
+config.json
+config.*.local.json
+*.log
+*.eth
+*.pcap*
+Nachrichten/
+Aufnahmen/
+Klingelprotokoll/
+KIselaSipTool/
+build*/
+dist*/
+__pycache__/
+*.pyc
+*.spec
+.venv/
+.env*
+*.zip
